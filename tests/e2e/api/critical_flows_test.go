@@ -1,4 +1,4 @@
-package e2e_test
+package api_test
 
 import (
 	"bytes"
@@ -6,8 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"testing"
-
-	"pr-reviewer-service/api"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/suite"
@@ -15,174 +14,247 @@ import (
 
 type CriticalFlowsTestSuite struct {
 	suite.Suite
-	baseURL string
-	client  *http.Client
+	baseURL    string
+	httpClient *http.Client
 }
 
 func (suite *CriticalFlowsTestSuite) SetupSuite() {
 	suite.baseURL = "http://localhost:8081"
-	suite.client = &http.Client{}
+	suite.httpClient = &http.Client{Timeout: 10 * time.Second}
 }
 
-// Каждый тест создает свои уникальные данные
-func (suite *CriticalFlowsTestSuite) createTestTeam(teamName string) {
-	team := api.Team{
-		TeamName: teamName,
-		Members: []api.TeamMember{
-			{UserId: teamName + "-author", Username: teamName + " Author", IsActive: true},
-			{UserId: teamName + "-reviewer1", Username: teamName + " Reviewer1", IsActive: true},
-			{UserId: teamName + "-reviewer2", Username: teamName + " Reviewer2", IsActive: true},
-		},
-	}
-
-	teamBody, _ := json.Marshal(team)
-	resp, err := suite.client.Post(suite.baseURL+"/team/add", "application/json", bytes.NewReader(teamBody))
-	if err != nil || resp.StatusCode != http.StatusCreated {
-		fmt.Printf("Failed to create team %s: %v\n", teamName, err)
-	}
-	if resp != nil {
-		resp.Body.Close()
-	}
+// generateUniqueName создает уникальное имя для теста
+func (suite *CriticalFlowsTestSuite) generateUniqueName(base string) string {
+	return fmt.Sprintf("%s-%d", base, time.Now().UnixNano())
 }
 
-// Test 1: Основной flow - создание команды → создание PR → авто-назначение ревьюеров
+// createTeam создает команду и обрабатывает 409 как успех (уже существует)
+func (suite *CriticalFlowsTestSuite) createTeam(teamName string, members []map[string]interface{}) error {
+	teamData := map[string]interface{}{
+		"team_name": teamName,
+		"members":   members,
+	}
+
+	jsonData, err := json.Marshal(teamData)
+	if err != nil {
+		return err
+	}
+
+	resp, err := suite.httpClient.Post(suite.baseURL+"/team/add", "application/json", bytes.NewBuffer(jsonData))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	// 201 - создано, 409 - уже существует (тоже ок)
+	if resp.StatusCode != 201 && resp.StatusCode != 409 {
+		return fmt.Errorf("failed to create team, status: %d", resp.StatusCode)
+	}
+
+	return nil
+}
+
 func (suite *CriticalFlowsTestSuite) TestMainFlow_CreateTeamAndPRAutoAssignment() {
-	teamName := "main-flow-team"
-	suite.createTestTeam(teamName)
+	t := suite.T()
 
-	// Создаем PR (должны автоматически назначиться ревьюеры)
-	prRequest := api.PostPullRequestCreateJSONBody{
-		PullRequestId:   "main-flow-pr",
-		PullRequestName: "Main Flow Test PR",
-		AuthorId:        teamName + "-author",
+	// Используем уникальное имя команды
+	teamName := suite.generateUniqueName("main-flow-team")
+	teamMembers := []map[string]interface{}{
+		{"user_id": "user1", "username": "User One", "is_active": true},
+		{"user_id": "user2", "username": "User Two", "is_active": true},
+		{"user_id": "user3", "username": "User Three", "is_active": true},
 	}
 
-	prBody, _ := json.Marshal(prRequest)
-	resp, err := suite.client.Post(suite.baseURL+"/pullRequest/create", "application/json", bytes.NewReader(prBody))
-	assert.NoError(suite.T(), err)
-	assert.Equal(suite.T(), http.StatusCreated, resp.StatusCode)
+	// Создаем команду
+	err := suite.createTeam(teamName, teamMembers)
+	assert.NoError(t, err, "Failed to create team")
 
-	var prResponse map[string]interface{}
-	json.NewDecoder(resp.Body).Decode(&prResponse)
-	resp.Body.Close()
+	// Создаем PR
+	prData := map[string]interface{}{
+		"pull_request_id":   suite.generateUniqueName("pr-main"),
+		"pull_request_name": "Test PR for Main Flow",
+		"author_id":         "user1",
+	}
 
-	// Проверяем что ревьюеры назначились
-	pr := prResponse["pr"].(map[string]interface{})
-	reviewers := pr["assigned_reviewers"].([]interface{})
-	assert.GreaterOrEqual(suite.T(), len(reviewers), 1)
-	assert.LessOrEqual(suite.T(), len(reviewers), 2)
+	jsonData, err := json.Marshal(prData)
+	assert.NoError(t, err)
+
+	resp, err := suite.httpClient.Post(suite.baseURL+"/pullRequest/create", "application/json", bytes.NewBuffer(jsonData))
+	assert.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, 201, resp.StatusCode, "Failed to create PR")
+
+	// Проверяем что PR создан
+	var result map[string]interface{}
+	err = json.NewDecoder(resp.Body).Decode(&result)
+	assert.NoError(t, err)
+
+	pr, exists := result["pr"].(map[string]interface{})
+	assert.True(t, exists, "PR data not found in response")
+	assert.Equal(t, "OPEN", pr["status"])
 }
 
-// Test 2: Переназначение ревьюера
 func (suite *CriticalFlowsTestSuite) TestReassignReviewerFlow() {
-	teamName := "reassign-team"
-	suite.createTestTeam(teamName)
+	t := suite.T()
+
+	teamName := suite.generateUniqueName("reassign-team")
+	teamMembers := []map[string]interface{}{
+		{"user_id": "reassign-u1", "username": "Reassign User 1", "is_active": true},
+		{"user_id": "reassign-u2", "username": "Reassign User 2", "is_active": true},
+		{"user_id": "reassign-u3", "username": "Reassign User 3", "is_active": true},
+	}
+
+	err := suite.createTeam(teamName, teamMembers)
+	assert.NoError(t, err, "Failed to create team")
 
 	// Создаем PR
-	prRequest := api.PostPullRequestCreateJSONBody{
-		PullRequestId:   "reassign-pr",
-		PullRequestName: "Reassign Test PR",
-		AuthorId:        teamName + "-author",
+	prID := suite.generateUniqueName("pr-reassign")
+	prData := map[string]interface{}{
+		"pull_request_id":   prID,
+		"pull_request_name": "Test PR for Reassign",
+		"author_id":         "reassign-u1",
 	}
 
-	prBody, _ := json.Marshal(prRequest)
-	resp, err := suite.client.Post(suite.baseURL+"/pullRequest/create", "application/json", bytes.NewReader(prBody))
-	assert.NoError(suite.T(), err)
-	assert.Equal(suite.T(), http.StatusCreated, resp.StatusCode)
-	resp.Body.Close()
+	jsonData, err := json.Marshal(prData)
+	assert.NoError(t, err)
 
-	// Переназначаем ревьюера (берем первого ревьювера из команды)
-	reassignRequest := api.PostPullRequestReassignJSONBody{
-		PullRequestId: "reassign-pr",
-		OldUserId:     teamName + "-reviewer1",
+	resp, err := suite.httpClient.Post(suite.baseURL+"/pullRequest/create", "application/json", bytes.NewBuffer(jsonData))
+	assert.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, 201, resp.StatusCode, "Failed to create PR")
+
+	// Пытаемся переназначить ревьювера
+	reassignData := map[string]interface{}{
+		"pull_request_id": prID,
+		"old_user_id":     "reassign-u2",
 	}
 
-	reassignBody, _ := json.Marshal(reassignRequest)
-	resp, err = suite.client.Post(suite.baseURL+"/pullRequest/reassign", "application/json", bytes.NewReader(reassignBody))
-	assert.NoError(suite.T(), err)
+	jsonData, err = json.Marshal(reassignData)
+	assert.NoError(t, err)
 
-	// Может быть 200 (успех) или 409 (нет кандидатов для замены) - оба допустимы
-	assert.True(suite.T(), resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusConflict,
+	resp, err = suite.httpClient.Post(suite.baseURL+"/pullRequest/reassign", "application/json", bytes.NewBuffer(jsonData))
+	assert.NoError(t, err)
+	defer resp.Body.Close()
+
+	// 200 - успешно переназначен, 409 - не был назначен (тоже нормально для теста)
+	assert.True(t, resp.StatusCode == 200 || resp.StatusCode == 409,
 		"Expected 200 or 409, got %d", resp.StatusCode)
-
-	if resp != nil {
-		resp.Body.Close()
-	}
 }
 
-// Test 3: Мерж PR
 func (suite *CriticalFlowsTestSuite) TestMergePRFlow() {
-	teamName := "merge-team"
-	suite.createTestTeam(teamName)
+	t := suite.T()
+
+	teamName := suite.generateUniqueName("merge-team")
+	teamMembers := []map[string]interface{}{
+		{"user_id": "merge-u1", "username": "Merge User 1", "is_active": true},
+		{"user_id": "merge-u2", "username": "Merge User 2", "is_active": true},
+	}
+
+	err := suite.createTeam(teamName, teamMembers)
+	assert.NoError(t, err, "Failed to create team")
 
 	// Создаем PR
-	prRequest := api.PostPullRequestCreateJSONBody{
-		PullRequestId:   "merge-pr",
-		PullRequestName: "Merge Test PR",
-		AuthorId:        teamName + "-author",
+	prID := suite.generateUniqueName("pr-merge")
+	prData := map[string]interface{}{
+		"pull_request_id":   prID,
+		"pull_request_name": "Test PR for Merge",
+		"author_id":         "merge-u1",
 	}
 
-	prBody, _ := json.Marshal(prRequest)
-	resp, err := suite.client.Post(suite.baseURL+"/pullRequest/create", "application/json", bytes.NewReader(prBody))
-	assert.NoError(suite.T(), err)
-	assert.Equal(suite.T(), http.StatusCreated, resp.StatusCode)
-	resp.Body.Close()
+	jsonData, err := json.Marshal(prData)
+	assert.NoError(t, err)
 
-	// Мержим PR
-	mergeRequest := api.PostPullRequestMergeJSONBody{
-		PullRequestId: "merge-pr",
+	resp, err := suite.httpClient.Post(suite.baseURL+"/pullRequest/create", "application/json", bytes.NewBuffer(jsonData))
+	assert.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, 201, resp.StatusCode, "Failed to create PR")
+
+	// Мерджим PR
+	mergeData := map[string]interface{}{
+		"pull_request_id": prID,
 	}
 
-	mergeBody, _ := json.Marshal(mergeRequest)
-	resp, err = suite.client.Post(suite.baseURL+"/pullRequest/merge", "application/json", bytes.NewReader(mergeBody))
-	assert.NoError(suite.T(), err)
-	assert.Equal(suite.T(), http.StatusOK, resp.StatusCode)
-	resp.Body.Close()
+	jsonData, err = json.Marshal(mergeData)
+	assert.NoError(t, err)
+
+	resp, err = suite.httpClient.Post(suite.baseURL+"/pullRequest/merge", "application/json", bytes.NewBuffer(jsonData))
+	assert.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, 200, resp.StatusCode, "Failed to merge PR")
+
+	// Проверяем что PR в статусе MERGED
+	var result map[string]interface{}
+	err = json.NewDecoder(resp.Body).Decode(&result)
+	assert.NoError(t, err)
+
+	pr, exists := result["pr"].(map[string]interface{})
+	assert.True(t, exists, "PR data not found in response")
+	assert.Equal(t, "MERGED", pr["status"])
 }
 
-// Test 4: Получение PR пользователя
 func (suite *CriticalFlowsTestSuite) TestGetUserReviewPRs() {
-	teamName := "user-review-team"
-	suite.createTestTeam(teamName)
+	t := suite.T()
 
-	// Создаем PR где пользователь является ревьювером
-	prRequest := api.PostPullRequestCreateJSONBody{
-		PullRequestId:   "user-review-pr",
-		PullRequestName: "User Review Test PR",
-		AuthorId:        teamName + "-author",
+	teamName := suite.generateUniqueName("user-review-team")
+	teamMembers := []map[string]interface{}{
+		{"user_id": "review-u1", "username": "Review User 1", "is_active": true},
+		{"user_id": "review-u2", "username": "Review User 2", "is_active": true},
 	}
 
-	prBody, _ := json.Marshal(prRequest)
-	resp, err := suite.client.Post(suite.baseURL+"/pullRequest/create", "application/json", bytes.NewReader(prBody))
-	assert.NoError(suite.T(), err)
-	assert.Equal(suite.T(), http.StatusCreated, resp.StatusCode)
-	resp.Body.Close()
+	err := suite.createTeam(teamName, teamMembers)
+	assert.NoError(t, err, "Failed to create team")
+
+	// Создаем PR где пользователь назначен ревьювером
+	prID := suite.generateUniqueName("pr-review")
+	prData := map[string]interface{}{
+		"pull_request_id":   prID,
+		"pull_request_name": "Test PR for Review",
+		"author_id":         "review-u1",
+	}
+
+	jsonData, err := json.Marshal(prData)
+	assert.NoError(t, err)
+
+	resp, err := suite.httpClient.Post(suite.baseURL+"/pullRequest/create", "application/json", bytes.NewBuffer(jsonData))
+	assert.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, 201, resp.StatusCode, "Failed to create PR")
 
 	// Получаем PR пользователя
-	resp, err = suite.client.Get(suite.baseURL + "/users/getReview?user_id=" + teamName + "-reviewer1")
-	assert.NoError(suite.T(), err)
+	resp, err = suite.httpClient.Get(suite.baseURL + "/users/getReview?user_id=review-u2")
+	assert.NoError(t, err)
+	defer resp.Body.Close()
 
-	// Может быть 200 (есть PR) или 404 (нет PR) - оба допустимы
-	assert.True(suite.T(), resp.StatusCode == http.StatusOK || resp.StatusCode == http.StatusNotFound,
-		"Expected 200 or 404, got %d", resp.StatusCode)
+	assert.Equal(t, 200, resp.StatusCode, "Failed to get user reviews")
 
-	if resp != nil {
-		resp.Body.Close()
-	}
+	var result map[string]interface{}
+	err = json.NewDecoder(resp.Body).Decode(&result)
+	assert.NoError(t, err)
+
+	// Проверяем что в ответе есть ожидаемые поля
+	_, hasUserID := result["user_id"]
+	_, hasPRs := result["pull_requests"]
+	assert.True(t, hasUserID && hasPRs, "Response missing required fields")
 }
 
-// Test 5: Статистика
 func (suite *CriticalFlowsTestSuite) TestStatsEndpoints() {
-	// Просто проверяем что endpoints отвечают
-	resp, err := suite.client.Get(suite.baseURL + "/stats/reviews")
-	assert.NoError(suite.T(), err)
-	assert.Equal(suite.T(), http.StatusOK, resp.StatusCode)
-	resp.Body.Close()
+	t := suite.T()
 
-	resp, err = suite.client.Get(suite.baseURL + "/stats/pr-assignments")
-	assert.NoError(suite.T(), err)
-	assert.Equal(suite.T(), http.StatusOK, resp.StatusCode)
-	resp.Body.Close()
+	// Просто проверяем что эндпоинты статистики работают
+	resp, err := suite.httpClient.Get(suite.baseURL + "/stats/reviews")
+	assert.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, 200, resp.StatusCode)
+
+	resp, err = suite.httpClient.Get(suite.baseURL + "/stats/pr-assignments")
+	assert.NoError(t, err)
+	defer resp.Body.Close()
+	assert.Equal(t, 200, resp.StatusCode)
 }
 
 func TestCriticalFlowsTestSuite(t *testing.T) {

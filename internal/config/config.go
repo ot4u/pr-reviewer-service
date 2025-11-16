@@ -16,7 +16,8 @@ type Config struct {
 }
 
 func LoadConfig() (Config, error) {
-	_ = godotenv.Load()
+
+	err := godotenv.Load()
 
 	return Config{
 		DBHost:     getEnv("DB_HOST", "localhost"),
@@ -25,7 +26,7 @@ func LoadConfig() (Config, error) {
 		DBPassword: getEnv("DB_PASSWORD", "password"),
 		DBName:     getEnv("DB_NAME", "pr_reviewer"),
 		ServerPort: getEnv("SERVER_PORT", "8080"),
-	}, nil
+	}, err
 }
 
 func getEnv(key, defaultValue string) string {

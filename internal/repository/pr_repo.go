@@ -34,7 +34,7 @@ func (r *PRRepository) CreateWithReviewers(ctx context.Context, pr *domain.PullR
 
 	defer func() {
 		if err != nil {
-			tx.Rollback()
+			_ = tx.Rollback()
 		}
 	}()
 
@@ -138,7 +138,7 @@ func (r *PRRepository) ReassignReviewer(ctx context.Context, prID, oldReviewerID
 
 	defer func() {
 		if err != nil {
-			tx.Rollback()
+			_ = tx.Rollback()
 		}
 	}()
 

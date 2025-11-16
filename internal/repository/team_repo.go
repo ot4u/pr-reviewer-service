@@ -33,7 +33,7 @@ func (r *TeamRepository) Create(ctx context.Context, team *domain.Team) error {
 
 	defer func() {
 		if err != nil {
-			tx.Rollback()
+			_ = tx.Rollback()
 		}
 	}()
 

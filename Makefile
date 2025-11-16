@@ -1,4 +1,4 @@
-run:
+run: install
 	docker compose up --build -d
 
 install: install_tools
@@ -13,7 +13,7 @@ docker_stop:
 docker_down:
 	docker compose down
 
-test:
+test: install
 	chmod +x scripts/run_tests.sh
 	./scripts/run_tests.sh
 
@@ -21,18 +21,21 @@ test-unit:
 	go test -v ./tests/unit/... -cover
   
 test-integration:
+	docker compose -f tests/docker-compose.e2e.yaml up -d --build
+	sleep 20
 	RUN_INTEGRATION_TESTS=1 go test -v ./tests/integration/... -tags=integration
+	docker compose -f tests/docker-compose.e2e.yaml down
 
 test-e2e:
 	docker compose -f tests/docker-compose.e2e.yaml up -d --build
-	sleep 20
+	sleep 10
 	API_URL=http://localhost:8081 go test -v ./tests/e2e/... -tags=e2e
 	docker compose -f tests/docker-compose.e2e.yaml down
 
 test-load:
 	docker compose -f tests/docker-compose.e2e.yaml up -d --build
-	sleep 20
-	go run tests/load/load_test_testing.go
+	sleep 10
+	go run tests/load/load_testing.go
 	docker compose -f tests/docker-compose.e2e.yaml down
 
 test-env:
@@ -58,9 +61,6 @@ install_tools:
 	go install github.com/vektra/mockery/v2@latest
 
 lint:
-	golangci-lint run
-
-lint-fix:
 	golangci-lint run --fix
 
 gen-mocks:
