@@ -1,0 +1,39 @@
+run:
+  timeout: 5m
+  modules-download-mode: readonly
+
+linters:
+  disable-all: true
+  enable:
+    - errcheck
+    - gosimple
+    - govet
+    - ineffassign
+    - staticcheck
+    - typecheck
+    - unused
+    - gofmt
+    - goimports
+    - gocyclo
+    - gosec
+    - misspell
+    - prealloc
+
+linters-settings:
+  gocyclo:
+    min-complexity: 15
+  goimports:
+    local-prefixes: pr-reviewer-service
+
+issues:
+  exclude-rules:
+    - path: tests
+      linters:
+        - gosec
+    - path: internal/database/.*\.go
+      linters:
+        - gofmt
+        - goimports
+
+output:
+  format: colored-line-number

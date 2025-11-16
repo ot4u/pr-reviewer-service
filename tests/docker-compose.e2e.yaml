@@ -1,0 +1,44 @@
+services:
+  # Тестовая БД (отдельная от основной)
+  postgres_e2e:
+    image: postgres:15
+    container_name: postgres_e2e
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: pr_reviewer_test
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d pr_reviewer_test"]
+      interval: 5s
+      timeout: 10s
+      retries: 5
+      start_period: 10s
+    networks:
+      - e2e_network
+
+  # Тестовое приложение (подключается к тестовой БД)
+  pr-reviewer-service_e2e:
+    build: 
+      context: ..  # ← КОРЕНЬ проекта (на уровень выше tests/)
+      dockerfile: Dockerfile  # Dockerfile в корне
+    container_name: pr-reviewer-service_e2e
+    ports:
+      - "8081:8080"
+    environment:
+      - DB_PORT=5432
+      - DB_USER=postgres
+      - DB_PASSWORD=password
+      - DB_NAME=pr_reviewer_test
+      - DB_HOST=postgres_e2e
+      - SERVER_PORT=8080
+    depends_on:
+      postgres_e2e:
+        condition: service_healthy
+    networks:
+      - e2e_network
+
+networks:
+  e2e_network:
+    driver: bridge

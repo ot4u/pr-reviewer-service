@@ -1,0 +1,47 @@
+version: '3.8'
+
+services:
+  pr-reviewer-service:
+    build: .
+    container_name: pr-reviewer-service
+    ports:
+      - "8080:8080"
+    environment:
+      - DB_PORT=5432
+      - DB_USER=postgres
+      - DB_PASSWORD=password
+      - DB_NAME=pr_reviewer
+      - DB_HOST=postgres
+      - SERVER_PORT=8080
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - internal
+
+  postgres:
+    image: postgres:15
+    container_name: postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: pr_reviewer
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./internal/database/migrations:/docker-entrypoint-initdb.d
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "sh -c 'pg_isready -U postgres -d pr_reviewer'"]
+      interval: 5s
+      timeout: 10s
+      retries: 5
+      start_period: 10s
+    networks:
+      - internal
+
+networks:
+  internal:
+
+volumes:
+  postgres_data:
