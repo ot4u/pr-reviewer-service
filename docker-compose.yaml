@@ -28,7 +28,6 @@ services:
       POSTGRES_DB: pr_reviewer
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./internal/database/migrations:/docker-entrypoint-initdb.d
     ports:
       - "5432:5432"
     healthcheck:
