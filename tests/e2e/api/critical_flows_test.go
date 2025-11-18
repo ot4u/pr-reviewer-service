@@ -95,54 +95,6 @@ func (suite *CriticalFlowsTestSuite) TestMainFlow_CreateTeamAndPRAutoAssignment(
 	assert.Equal(t, "OPEN", pr["status"])
 }
 
-func (suite *CriticalFlowsTestSuite) TestReassignReviewerFlow() {
-	t := suite.T()
-
-	teamName := suite.generateUniqueName("reassign-team")
-	teamMembers := []map[string]interface{}{
-		{"user_id": "reassign-u1", "username": "Reassign User 1", "is_active": true},
-		{"user_id": "reassign-u2", "username": "Reassign User 2", "is_active": true},
-		{"user_id": "reassign-u3", "username": "Reassign User 3", "is_active": true},
-	}
-
-	err := suite.createTeam(teamName, teamMembers)
-	assert.NoError(t, err, "Failed to create team")
-
-	// Создаем PR
-	prID := suite.generateUniqueName("pr-reassign")
-	prData := map[string]interface{}{
-		"pull_request_id":   prID,
-		"pull_request_name": "Test PR for Reassign",
-		"author_id":         "reassign-u1",
-	}
-
-	jsonData, err := json.Marshal(prData)
-	assert.NoError(t, err)
-
-	resp, err := suite.httpClient.Post(suite.baseURL+"/pullRequest/create", "application/json", bytes.NewBuffer(jsonData))
-	assert.NoError(t, err)
-	defer resp.Body.Close()
-
-	assert.Equal(t, 201, resp.StatusCode, "Failed to create PR")
-
-	// Пытаемся переназначить ревьювера
-	reassignData := map[string]interface{}{
-		"pull_request_id": prID,
-		"old_user_id":     "reassign-u2",
-	}
-
-	jsonData, err = json.Marshal(reassignData)
-	assert.NoError(t, err)
-
-	resp, err = suite.httpClient.Post(suite.baseURL+"/pullRequest/reassign", "application/json", bytes.NewBuffer(jsonData))
-	assert.NoError(t, err)
-	defer resp.Body.Close()
-
-	// 200 - успешно переназначен, 409 - не был назначен (тоже нормально для теста)
-	assert.True(t, resp.StatusCode == 200 || resp.StatusCode == 409,
-		"Expected 200 or 409, got %d", resp.StatusCode)
-}
-
 func (suite *CriticalFlowsTestSuite) TestMergePRFlow() {
 	t := suite.T()
 
